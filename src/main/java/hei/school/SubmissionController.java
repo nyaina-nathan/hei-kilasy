@@ -1,9 +1,11 @@
 package hei.school;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +30,57 @@ public class SubmissionController {
 
     @Autowired
     private JavaMailSender mailSender;
+
+    private static final BigDecimal PENALTY_PER_DAY = new BigDecimal("0.10");
+    private static final BigDecimal MAX_PENALTY = new BigDecimal("0.50");
+    private static final BigDecimal MAX_GRADE = new BigDecimal("20");
+    private static final String PENALTY_MARKER = "Pénalité de retard :";
+
+    /**
+     * The deadline is a date, so it is considered to be at 00:00 on that day. Any submission
+     * after that instant is at least one day late, even if it happens on the deadline day.
+     */
+    private static long lateDays(LocalDate deadline, LocalDateTime submittedAt) {
+        LocalDateTime deadlineStart = deadline.atStartOfDay();
+        if (!submittedAt.isAfter(deadlineStart)) {
+            return 0;
+        }
+        return ChronoUnit.DAYS.between(deadline, submittedAt.toLocalDate()) + 1;
+    }
+
+    private static BigDecimal penaltyRate(long daysLate) {
+        return PENALTY_PER_DAY.multiply(BigDecimal.valueOf(daysLate)).min(MAX_PENALTY);
+    }
+
+    private static int penaltyPercent(long daysLate) {
+        return penaltyRate(daysLate).multiply(BigDecimal.valueOf(100)).intValue();
+    }
+
+    private static BigDecimal gradeOutOf20(BigDecimal points, BigDecimal maxPoints) {
+        return points.multiply(MAX_GRADE).divide(maxPoints, 1, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Keeps the teacher's feedback and appends the automatically generated penalty note.
+     * Any previous penalty note is removed first so re-grading does not duplicate it.
+     */
+    private static String buildFeedback(String feedback, long daysLate, int penaltyPercent, BigDecimal initialGrade) {
+        String base = feedback == null ? "" : feedback.strip();
+        int marker = base.indexOf("\n\n" + PENALTY_MARKER);
+        if (marker < 0 && base.startsWith(PENALTY_MARKER)) {
+            marker = 0;
+        }
+        if (marker >= 0) {
+            base = base.substring(0, marker).stripTrailing();
+        }
+        if (daysLate == 0) {
+            return marker >= 0 ? base : feedback;
+        }
+        String note = PENALTY_MARKER + " " + penaltyPercent + " % ("
+                + daysLate + (daysLate == 1 ? " jour" : " jours") + " de retard).\n"
+                + "Note avant pénalité : " + initialGrade + "/20.";
+        return base.isEmpty() ? note : base + "\n\n" + note;
+    }
 
     @PostMapping("/exercises/{id}/submissions")
     public ResponseEntity<?> submit(@PathVariable long id, @RequestBody Map<String, Object> body) {
@@ -60,7 +113,8 @@ public class SubmissionController {
 
         LocalDate deadline = ((java.sql.Date) exercises.get(0).get("deadline")).toLocalDate();
         LocalDateTime now = LocalDateTime.now();
-        boolean late = now.toLocalDate().isAfter(deadline);
+        long daysLate = lateDays(deadline, now);
+        boolean late = daysLate > 0;
 
         jdbcTemplate.update(
                 "INSERT INTO submission (exercise_id, student_id, content, repo_url, submitted_at) VALUES (?, ?, ?, ?, ?)",
@@ -71,6 +125,8 @@ public class SubmissionController {
         result.put("id", submissionId);
         result.put("submittedAt", now);
         result.put("late", late);
+        result.put("lateDays", daysLate);
+        result.put("penaltyPercent", penaltyPercent(daysLate));
         result.put("message", late ? "Soumission enregistrée, mais en retard" : "Soumission enregistrée");
         return ResponseEntity.status(201).body(result);
     }
@@ -87,6 +143,7 @@ public class SubmissionController {
         LocalDate deadline = ((java.sql.Date) row.get("deadline")).toLocalDate();
         LocalDateTime submittedAt = ((Timestamp) row.get("submitted_at")).toLocalDateTime();
 
+        long daysLate = lateDays(deadline, submittedAt);
         Map<String, Object> result = new HashMap<>();
         result.put("id", row.get("id"));
         result.put("exercise", row.get("title"));
@@ -94,12 +151,14 @@ public class SubmissionController {
         result.put("content", row.get("content"));
         result.put("repoUrl", row.get("repo_url"));
         result.put("submittedAt", submittedAt);
-        result.put("late", submittedAt.toLocalDate().isAfter(deadline));
+        result.put("late", daysLate > 0);
+        result.put("lateDays", daysLate);
+        result.put("penaltyPercent", penaltyPercent(daysLate));
         if (row.get("raw_points") != null) {
-            double raw = ((BigDecimal) row.get("raw_points")).doubleValue();
-            double max = ((BigDecimal) row.get("max_points")).doubleValue();
-            result.put("rawPoints", raw);
-            result.put("grade", Math.round(raw / max * 20 * 10) / 10.0);
+            BigDecimal raw = (BigDecimal) row.get("raw_points");
+            BigDecimal max = (BigDecimal) row.get("max_points");
+            result.put("rawPoints", raw.doubleValue());
+            result.put("grade", gradeOutOf20(raw, max).doubleValue());
             result.put("feedback", row.get("feedback"));
         }
         return ResponseEntity.ok(result);
@@ -122,20 +181,29 @@ public class SubmissionController {
             return ResponseEntity.status(404).body(Map.of("error", "Soumission introuvable"));
         }
         Map<String, Object> row = rows.get(0);
-        double max = ((BigDecimal) row.get("max_points")).doubleValue();
+        BigDecimal maxPoints = (BigDecimal) row.get("max_points");
+        double max = maxPoints.doubleValue();
         if (points < 0 || points > max) {
             return ResponseEntity.badRequest().body(Map.of("error", "Les points doivent être entre 0 et " + max));
         }
 
-        jdbcTemplate.update("UPDATE submission SET raw_points = ?, feedback = ?, graded_at = now() WHERE id = ?",
-                points, feedback, id);
-
-        // grade out of 20
-        double grade = Math.round(points / max * 20 * 10) / 10.0;
-
         LocalDate deadline = ((java.sql.Date) row.get("deadline")).toLocalDate();
         LocalDateTime submittedAt = ((Timestamp) row.get("submitted_at")).toLocalDateTime();
-        boolean late = submittedAt.toLocalDate().isAfter(deadline);
+        long daysLate = lateDays(deadline, submittedAt);
+        int penaltyPct = penaltyPercent(daysLate);
+        boolean late = daysLate > 0;
+
+        BigDecimal initialPoints = BigDecimal.valueOf(points);
+        BigDecimal initialGrade = gradeOutOf20(initialPoints, maxPoints);
+        BigDecimal penalizedPoints = initialPoints
+                .multiply(BigDecimal.ONE.subtract(penaltyRate(daysLate)))
+                .setScale(2, RoundingMode.HALF_UP);
+        // grade out of 20, based on the penalized points
+        BigDecimal grade = gradeOutOf20(penalizedPoints, maxPoints);
+        String storedFeedback = buildFeedback(feedback, daysLate, penaltyPct, initialGrade);
+
+        jdbcTemplate.update("UPDATE submission SET raw_points = ?, feedback = ?, graded_at = now() WHERE id = ?",
+                penalizedPoints, storedFeedback, id);
 
         // notify the student by email
         String fullName = (String) row.get("full_name");
@@ -157,11 +225,13 @@ public class SubmissionController {
 
         Map<String, Object> result = new HashMap<>();
         result.put("id", id);
-        result.put("rawPoints", points);
+        result.put("rawPoints", penalizedPoints.doubleValue());
         result.put("maxPoints", max);
-        result.put("grade", grade);
+        result.put("grade", grade.doubleValue());
         result.put("late", late);
-        result.put("feedback", feedback);
+        result.put("lateDays", daysLate);
+        result.put("penaltyPercent", penaltyPct);
+        result.put("feedback", storedFeedback);
         return ResponseEntity.ok(result);
     }
 }
