@@ -10,6 +10,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -30,6 +33,8 @@ public class SubmissionController {
 
     @Autowired
     private JavaMailSender mailSender;
+
+    private final Logger logger = LoggerFactory.getLogger(SubmissionController.class);
 
     private static final BigDecimal PENALTY_PER_DAY = new BigDecimal("0.10");
     private static final BigDecimal MAX_PENALTY = new BigDecimal("0.50");
@@ -222,6 +227,12 @@ public class SubmissionController {
         message.setText(text);
         mailSender.send(message);
         System.out.println("Email de note envoyé à " + row.get("email"));
+
+        String phoneNumber = (String) row.get("phone");
+
+        if(phoneNumber != null && !phoneNumber.isBlank()){
+            logger.info("[SMS] {} : Votre note pour \"{}\" est disponible: {}/20.", phoneNumber, title, grade);
+        }
 
         Map<String, Object> result = new HashMap<>();
         result.put("id", id);
