@@ -23,8 +23,9 @@ public class CsvExport {
     public ResponseEntity<String> export() {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
                 "SELECT st.reference, st.full_name, st.email, st.cohort, e.title, e.deadline, s.submitted_at, s.raw_points, e.max_points, "
-                        + "(s.submitted_at::date > e.deadline) AS late "
+                        + "(e.deadline IS NOT NULL AND s.submitted_at::date > e.deadline) AS late "
                         + "FROM submission s JOIN student st ON st.id = s.student_id JOIN exercise e ON e.id = s.exercise_id "
+                        + "WHERE s.submitted_at IS NOT NULL "
                         + "ORDER BY st.full_name, e.deadline");
 
         StringBuilder csv = new StringBuilder();
@@ -42,7 +43,7 @@ public class CsvExport {
                     .append(row.get("email")).append(';')
                     .append(row.get("cohort")).append(';')
                     .append(row.get("title")).append(';')
-                    .append(row.get("deadline")).append(';')
+                    .append(row.get("deadline") == null ? "" : row.get("deadline")).append(';')
                     .append(row.get("submitted_at")).append(';')
                     .append(Boolean.TRUE.equals(row.get("late")) ? "oui" : "non").append(';')
                     .append(note).append('\n');

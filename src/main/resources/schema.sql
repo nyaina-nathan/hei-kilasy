@@ -23,9 +23,15 @@ CREATE TABLE IF NOT EXISTS exercise
     title       VARCHAR(200) NOT NULL,
     description TEXT,
     max_points  NUMERIC(5, 2) NOT NULL DEFAULT 20,
-    deadline    DATE         NOT NULL,
+    deadline    DATE,
+    chrono      INTEGER,
     created_at  TIMESTAMP    NOT NULL DEFAULT now()
 );
+
+-- Existing databases: add the optional chrono duration (in minutes)
+ALTER TABLE exercise ADD COLUMN IF NOT EXISTS chrono INTEGER;
+-- Existing databases: deadline is optional when the exercise has a chrono
+ALTER TABLE exercise ALTER COLUMN deadline DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS submission
 (
@@ -34,9 +40,15 @@ CREATE TABLE IF NOT EXISTS submission
     student_id   BIGINT    NOT NULL REFERENCES student (id),
     content      TEXT,
     repo_url     VARCHAR(300),
-    submitted_at TIMESTAMP NOT NULL DEFAULT now(),
+    started_at   TIMESTAMP,
+    submitted_at TIMESTAMP,
     raw_points   NUMERIC(5, 2),
     feedback     TEXT,
     graded_at    TIMESTAMP,
     UNIQUE (exercise_id, student_id)
 );
+
+-- Existing databases: allow a submission row to exist before it is submitted
+ALTER TABLE submission ADD COLUMN IF NOT EXISTS started_at TIMESTAMP;
+ALTER TABLE submission ALTER COLUMN submitted_at DROP NOT NULL;
+ALTER TABLE submission ALTER COLUMN submitted_at DROP DEFAULT;

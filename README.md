@@ -1,6 +1,6 @@
 # Kilasy
 
-Kilasy is a programming exercise platform. Teachers publish exercises with a deadline, students submit their code or a link to their GitHub repository, and teachers then grade them. Students receive their grade by email.
+Kilasy is a programming exercise platform. Teachers publish exercises with a deadline and/or a time limit, students submit their code or a link to their GitHub repository, and teachers then grade them. Students receive their grade by email.
 
 Production version: 1.3.0.
 
@@ -35,6 +35,7 @@ The API responds on http://localhost:8080.
 | GET | `/exercises` | List exercises |
 | GET | `/exercises/{id}` | Exercise details |
 | POST | `/exercises` | Create an exercise (teacher) |
+| POST | `/exercises/{id}/start` | Start a timed exercise (student) |
 | POST | `/exercises/{id}/submissions` | Submit an exercise (student) |
 | GET | `/submissions/{id}` | Submission details |
 | PUT | `/submissions/{id}/grade` | Grade a submission (teacher) |
@@ -46,15 +47,27 @@ There is no authentication yet: the student or teacher identifier is passed in t
 
 ## Examples
 
-Create an exercise:
+Create an exercise with a deadline, a chrono, or both (`chrono` is expressed in minutes):
 
 ```bash
 curl -X POST http://localhost:8080/exercises \
   -H "Content-Type: application/json" \
-  -d '{"title": "Recherche dichotomique", "maxPoints": 20, "deadline": "2027-03-01", "teacherId": 1}'
+  -d '{"title": "Recherche dichotomique", "maxPoints": 20, "deadline": "2027-03-01", "teacherId": 1, "chrono": 30}'
 ```
 
-Submit an exercise:
+Start a timed exercise, then submit it:
+
+```bash
+curl -X POST http://localhost:8080/exercises/5/start \
+  -H "Content-Type: application/json" \
+  -d '{"studentId": 2}'
+
+curl -X POST http://localhost:8080/exercises/5/submissions \
+  -H "Content-Type: application/json" \
+  -d '{"studentId": 2, "content": "public class FizzBuzz { /* ... */ }"}'
+```
+
+Submit an exercise without a chrono:
 
 ```bash
 curl -X POST http://localhost:8080/exercises/4/submissions \
@@ -80,7 +93,10 @@ curl http://localhost:8080/exports/grades.csv
 ## Business rules
 
 - A submission contains code, a link to a GitHub repository, or both.
-- A student can only submit once per exercise.
-- The deadline is the given date at 00:00; any later submission is late, including later on the deadline day.
+- An exercise has a deadline, a chrono (a time limit in minutes), or both.
+- The student must start a timed exercise before submitting it; a submission made after the chrono has elapsed is rejected with 422.
+- A student can only start once and submit once per exercise.
+- For timed exercises, the transcript shows the chrono limit and the time taken in minutes (one decimal).
+- When there is a deadline, it is the given date at 00:00; any later submission is late, including later on the deadline day. Without a deadline, submissions are never late.
 - A late submission loses 10% of its initial points per late day, capped at 50%.
 - Points are entered on the exercise's scale (10, 20, 40…) and converted to a grade out of 20.
